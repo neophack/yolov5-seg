@@ -139,6 +139,7 @@ def export_onnx(model, im, file, opset, dynamic, simplify, prefix=colorstr('ONNX
     f = file.with_suffix('.onnx')
 
     output_names = ['output0', 'output1'] if isinstance(model, SegmentationModel) else ['output0']
+    output_names=["l80","l40","l20"]
     if dynamic:
         dynamic = {'images': {0: 'batch', 2: 'height', 3: 'width'}}  # shape(1,3,640,640)
         if isinstance(model, SegmentationModel):
@@ -502,7 +503,7 @@ def run(
         int8=False,  # CoreML/TF INT8 quantization
         dynamic=False,  # ONNX/TF/TensorRT: dynamic axes
         simplify=False,  # ONNX: simplify model
-        opset=12,  # ONNX: opset version
+        opset=11,  # ONNX: opset version
         verbose=False,  # TensorRT: verbose log
         workspace=4,  # TensorRT: workspace size (GB)
         nms=False,  # TF: add NMS to model
@@ -544,14 +545,20 @@ def run(
             m.inplace = inplace
             m.dynamic = dynamic
             m.export = True
+            m.export2 = True
+            astr=""
+            for i in range(len(m.stride)):
+                a = (m.anchors[i] * m.stride[i]).cpu().numpy()
+                astr+="{"+str(a[0][0])+","+str(a[0][1])+","+str(a[1][0])+","+str(a[1][1])+","+str(a[2][0])+","+str(a[2][1])+"},"
+            print(astr)
 
     for _ in range(2):
         y = model(im)  # dry runs
     if half and not coreml:
         im, model = im.half(), model.half()  # to FP16
-    shape = tuple((y[0] if isinstance(y, tuple) else y).shape)  # model output shape
+    # shape = tuple((y[0] if isinstance(y, tuple) else y).shape)  # model output shape
     metadata = {'stride': int(max(model.stride)), 'names': model.names}  # model metadata
-    LOGGER.info(f"\n{colorstr('PyTorch:')} starting from {file} with output shape {shape} ({file_size(file):.1f} MB)")
+    # LOGGER.info(f"\n{colorstr('PyTorch:')} starting from {file} with output shape {shape} ({file_size(file):.1f} MB)")
 
     # Exports
     f = [''] * len(fmts)  # exported filenames
@@ -623,7 +630,7 @@ def parse_opt():
     parser.add_argument('--int8', action='store_true', help='CoreML/TF INT8 quantization')
     parser.add_argument('--dynamic', action='store_true', help='ONNX/TF/TensorRT: dynamic axes')
     parser.add_argument('--simplify', action='store_true', help='ONNX: simplify model')
-    parser.add_argument('--opset', type=int, default=12, help='ONNX: opset version')
+    parser.add_argument('--opset', type=int, default=11, help='ONNX: opset version')
     parser.add_argument('--verbose', action='store_true', help='TensorRT: verbose log')
     parser.add_argument('--workspace', type=int, default=4, help='TensorRT: workspace size (GB)')
     parser.add_argument('--nms', action='store_true', help='TF: add NMS to model')
@@ -635,7 +642,7 @@ def parse_opt():
     parser.add_argument(
         '--include',
         nargs='+',
-        default=['torchscript'],
+        default=["onnx"],
         help='torchscript, onnx, openvino, engine, coreml, saved_model, pb, tflite, edgetpu, tfjs, paddle')
     opt = parser.parse_args()
     print_args(vars(opt))

@@ -260,7 +260,7 @@ class LoadImages:
         self.nf = ni + nv  # number of files
         self.video_flag = [False] * ni + [True] * nv
         self.mode = 'image'
-        self.auto = auto
+        self.auto = False #auto
         self.transforms = transforms  # optional
         self.vid_stride = vid_stride  # video frame-rate stride
         if any(videos):
@@ -307,10 +307,14 @@ class LoadImages:
 
         if self.transforms:
             im = self.transforms(im0)  # transforms
+            # print(" transforms")
         else:
             im = letterbox(im0, self.img_size, stride=self.stride, auto=self.auto)[0]  # padded resize
+            # cv2.imshow("im",im[...,::-1])
+            # cv2.waitKey(0)
             im = im.transpose((2, 0, 1))[::-1]  # HWC to CHW, BGR to RGB
             im = np.ascontiguousarray(im)  # contiguous
+            # print(" HWC to CHW, BGR to RGB")
 
         return path, im, im0, self.cap, s
 
