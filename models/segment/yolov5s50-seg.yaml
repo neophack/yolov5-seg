@@ -1,17 +1,18 @@
 # parameters
 nc: 80  # number of classes
 depth_multiple: 0.33  # model depth multiple
-width_multiple: 0.50  # layer channel multiple
+width_multiple: 0.5  # layer channel multiple
 
 # anchors
 anchors:
-  # - [10,13, 16,30, 33,23]  # P3/8
-  # - [35,97, 62,45, 119,30]  # P4/16
-  # - [300,83, 156,198, 61,326]  # P5/32
   - [3,10, 10,16, 16,30]  # P3/8
   - [33,23, 30,61, 62,45]  # P4/16
   - [59,119, 186,90, 273,326]  # P5/32
+  # - [3,5, 6,9,10,11]  # P3/8
+  # - [ 8,16, 16,19,20,41]  # P4/16
+  # - [ 42,41, 34,88, 34,128]  # P5/32
 
+ 
 # YOLOv5 backbone
 backbone:
   # [from, number, module, args]
@@ -19,7 +20,7 @@ backbone:
    [-1, 1, Conv, [128, 3, 2]],  # 1-P2/4
    [-1, 3, C3, [128]],
    [-1, 1, Conv, [256, 3, 2]],  # 3-P3/8
-   [-1, 9, C3, [256]],
+   [-1, 6, C3, [256]],
    [-1, 1, Conv, [512, 3, 2]],  # 5-P4/16
    [-1, 9, C3, [512]],
    [-1, 1, Conv, [1024, 3, 2]],  # 7-P5/32
@@ -47,5 +48,6 @@ head:
    [[-1, 10], 1, Concat, [1]],  # cat head P5
    [-1, 3, C3, [1024, False]],  # 23 (P5/32-large)
 
-   [[17, 20, 23], 1, Detect, [nc, anchors]],  # Detect(P3, P4, P5)
+  [[17, 20, 23], 1, Segment, [nc, anchors, 32, 256]],  # Detect(P3, P4, P5)
   ]
+  
