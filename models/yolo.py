@@ -151,6 +151,42 @@ class BaseModel(nn.Module):
                 m.conv = fuse_conv_and_bn(m.conv, m.bn)  # update conv
                 delattr(m, 'bn')  # remove batchnorm
                 m.forward = m.forward_fuse  # update forward
+            if type(m) is Shuffle_Block:
+                if hasattr(m, 'branch1'):
+                    re_branch1 = nn.Sequential(
+                        nn.Conv2d(m.branch1[0].in_channels, m.branch1[0].out_channels,
+                                  kernel_size=m.branch1[0].kernel_size, stride=m.branch1[0].stride,
+                                  padding=m.branch1[0].padding, groups=m.branch1[0].groups),
+                        nn.Conv2d(m.branch1[2].in_channels, m.branch1[2].out_channels,
+                                  kernel_size=m.branch1[2].kernel_size, stride=m.branch1[2].stride,
+                                  padding=m.branch1[2].padding, bias=False),
+                        nn.ReLU(inplace=True),
+                    )
+                    re_branch1[0] = fuse_conv_and_bn(m.branch1[0], m.branch1[1])
+                    re_branch1[1] = fuse_conv_and_bn(m.branch1[2], m.branch1[3])
+                    # pdb.set_trace()
+                    # print(m.branch1[0])
+                    m.branch1 = re_branch1
+                if hasattr(m, 'branch2'):
+                    re_branch2 = nn.Sequential(
+                        nn.Conv2d(m.branch2[0].in_channels, m.branch2[0].out_channels,
+                                  kernel_size=m.branch2[0].kernel_size, stride=m.branch2[0].stride,
+                                  padding=m.branch2[0].padding, groups=m.branch2[0].groups),
+                        nn.ReLU(inplace=True),
+                        nn.Conv2d(m.branch2[3].in_channels, m.branch2[3].out_channels,
+                                  kernel_size=m.branch2[3].kernel_size, stride=m.branch2[3].stride,
+                                  padding=m.branch2[3].padding, bias=False),
+                        nn.Conv2d(m.branch2[5].in_channels, m.branch2[5].out_channels,
+                                  kernel_size=m.branch2[5].kernel_size, stride=m.branch2[5].stride,
+                                  padding=m.branch2[5].padding, groups=m.branch2[5].groups),
+                        nn.ReLU(inplace=True),
+                    )
+                    re_branch2[0] = fuse_conv_and_bn(m.branch2[0], m.branch2[1])
+                    re_branch2[2] = fuse_conv_and_bn(m.branch2[3], m.branch2[4])
+                    re_branch2[3] = fuse_conv_and_bn(m.branch2[5], m.branch2[6])
+                    # pdb.set_trace()
+                    m.branch2 = re_branch2
+                    # print(m.branch2)
         self.info()
         return self
 
@@ -322,8 +358,8 @@ def parse_model(d, ch):  # model_dict, input_channels(3)
 
         n = n_ = max(round(n * gd), 1) if n > 1 else n  # depth gain
         if m in {
-                Conv, GhostConv, Bottleneck, GhostBottleneck, SPP, SPPF, DWConv, MixConv2d, Focus, CrossConv,
-                BottleneckCSP, C3, C3TR, C3SPP, C3Ghost, nn.ConvTranspose2d, DWConvTranspose2d, C3x}:
+                MyUpsample, Conv, GhostConv, Bottleneck, GhostBottleneck, SPP, SPPF, DWConv, MixConv2d, Focus, CrossConv,
+                BottleneckCSP, C3, C3TR, C3SPP, C3Ghost, nn.ConvTranspose2d, DWConvTranspose2d, C3x, nn.ConvTranspose2d, Shuffle_Block, conv_bn_relu_maxpool, DWConvblock,ADD}:
             c1, c2 = ch[f], args[0]
             if c2 != no:  # if not output
                 c2 = make_divisible(c2 * gw, 8)
@@ -332,10 +368,15 @@ def parse_model(d, ch):  # model_dict, input_channels(3)
             if m in {BottleneckCSP, C3, C3TR, C3Ghost, C3x}:
                 args.insert(2, n)  # number of repeats
                 n = 1
+            elif m is nn.ConvTranspose2d:
+                if len(args) >= 7:
+                    args[6] = make_divisible(args[6] * gw, 8)
         elif m is nn.BatchNorm2d:
             args = [ch[f]]
         elif m is Concat:
             c2 = sum(ch[x] for x in f)
+        elif m is ADD:
+            c2 = sum([ch[x] for x in f])//2
         # TODO: channel, gw, gd
         elif m in {Detect, Segment}:
             args.append([ch[x] for x in f])

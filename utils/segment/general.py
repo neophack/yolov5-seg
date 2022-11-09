@@ -54,7 +54,8 @@ def process_mask(protos, masks_in, bboxes, shape, upsample=False):
     c, mh, mw = protos.shape  # CHW
     ih, iw = shape
     masks = (masks_in @ protos.float().view(c, -1)).sigmoid().view(-1, mh, mw)  # CHW
-
+    # print((masks_in @ protos.float().view(c, -1)).shape)
+    
     downsampled_bboxes = bboxes.clone()
     downsampled_bboxes[:, 0] *= mw / iw
     downsampled_bboxes[:, 2] *= mw / iw
@@ -121,7 +122,7 @@ def masks_iou(mask1, mask2, eps=1e-7):
     return intersection / (union + eps)
 
 
-def masks2segments(masks, strategy='largest'):
+def masks2segments(masks, strategy='concat'):
     # Convert masks(n,160,160) into segments(n,xy)
     segments = []
     for x in masks.int().cpu().numpy().astype('uint8'):

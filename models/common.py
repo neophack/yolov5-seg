@@ -21,6 +21,7 @@ import pandas as pd
 import requests
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 from IPython.display import display
 from PIL import Image
 from torch.cuda import amp
@@ -42,10 +43,22 @@ def autopad(k, p=None, d=1):  # kernel, padding, dilation
         p = k // 2 if isinstance(k, int) else [x // 2 for x in k]  # auto-pad
     return p
 
+class MyUpsample(nn.Module):
+    def __init__(self,c,c2, scale_factor=2, mode="nearest"):
+        super(MyUpsample, self).__init__()
+        self.scale_factor = scale_factor
+ 
+    def forward(self, x):
+        if self.training:
+            x = F.interpolate(x, scale_factor=self.scale_factor, mode="nearest")
+        else:
+            # hack in order to generate a simpler onnx
+            x = F.interpolate(x, size=[int(self.scale_factor * x.shape[2]), int(self.scale_factor * x.shape[3])], mode='nearest')
+        return x
 
 class Conv(nn.Module):
     # Standard convolution with args(ch_in, ch_out, kernel, stride, padding, groups, dilation, activation)
-    default_act = nn.ReLU6()  # default activation
+    default_act = nn.LeakyReLU()  # default activation
 
     def __init__(self, c1, c2, k=1, s=1, p=None, g=1, d=1, act=True):
         super().__init__()
@@ -131,7 +144,7 @@ class BottleneckCSP(nn.Module):
         self.cv3 = nn.Conv2d(c_, c_, 1, 1, bias=False)
         self.cv4 = Conv(2 * c_, c2, 1, 1)
         self.bn = nn.BatchNorm2d(2 * c_)  # applied to cat(cv2, cv3)
-        self.act = nn.ReLU6()
+        self.act = nn.LeakyReLU()
         self.m = nn.Sequential(*(Bottleneck(c_, c_, shortcut, g, e=1.0) for _ in range(n)))
 
     def forward(self, x):
@@ -836,12 +849,14 @@ class Proto(nn.Module):
     def __init__(self, c1, c_=256, c2=32):  # ch_in, number of protos, number of masks
         super().__init__()
         self.cv1 = Conv(c1, c_, k=3)
-        self.upsample = nn.Upsample(scale_factor=2, mode='nearest')
+        # self.upsample = nn.Upsample(scale_factor=2, mode='nearest')
+        self.upsample = nn.ConvTranspose2d(c_,c_, kernel_size=3, stride=2)
         self.cv2 = Conv(c_, c_, k=3)
+        self.upsample2 = nn.ConvTranspose2d(c_,c_, kernel_size=3, stride=2)
         self.cv3 = Conv(c_, c2)
 
     def forward(self, x):
-        return self.cv3(self.cv2(self.upsample(self.cv1(x))))
+        return self.cv3(self.upsample2(self.cv2(self.upsample(self.cv1(x)))))
 
 
 class Classify(nn.Module):
@@ -858,3 +873,95 @@ class Classify(nn.Module):
         if isinstance(x, list):
             x = torch.cat(x, 1)
         return self.linear(self.drop(self.pool(self.conv(x)).flatten(1)))
+
+
+class Shuffle_Block(nn.Module):
+    def __init__(self, inp, oup, stride):
+        super(Shuffle_Block, self).__init__()
+
+        if not (1 <= stride <= 3):
+            raise ValueError('illegal stride value')
+        self.stride = stride
+
+        branch_features = oup // 2
+        assert (self.stride != 1) or (inp == branch_features << 1)
+
+        if self.stride > 1:
+            self.branch1 = nn.Sequential(
+                self.depthwise_conv(inp, inp, kernel_size=3, stride=self.stride, padding=1),
+                nn.BatchNorm2d(inp),
+                nn.Conv2d(inp, branch_features, kernel_size=1, stride=1, padding=0, bias=False),
+                nn.BatchNorm2d(branch_features),
+                nn.ReLU(inplace=True),
+            )
+
+        self.branch2 = nn.Sequential(
+            nn.Conv2d(inp if (self.stride > 1) else branch_features,
+                      branch_features, kernel_size=1, stride=1, padding=0, bias=False),
+            nn.BatchNorm2d(branch_features),
+            nn.ReLU(inplace=True),
+            self.depthwise_conv(branch_features, branch_features, kernel_size=3, stride=self.stride, padding=1),
+            nn.BatchNorm2d(branch_features),
+            nn.Conv2d(branch_features, branch_features, kernel_size=1, stride=1, padding=0, bias=False),
+            nn.BatchNorm2d(branch_features),
+            nn.ReLU(inplace=True),
+        )
+
+    @staticmethod
+    def depthwise_conv(i, o, kernel_size, stride=1, padding=0, bias=False):
+        return nn.Conv2d(i, o, kernel_size, stride, padding, bias=bias, groups=i)
+
+    def forward(self, x):
+        if self.stride == 1:
+            x1, x2 = x.chunk(2, dim=1)
+            out = torch.cat((x1, self.branch2(x2)), dim=1)
+        else:
+            out = torch.cat((self.branch1(x), self.branch2(x)), dim=1)
+
+        out = channel_shuffle(out, 2)
+
+        return out
+
+class conv_bn_relu_maxpool(nn.Module):
+    def __init__(self, c1, c2):  # ch_in, ch_out
+        super(conv_bn_relu_maxpool, self).__init__()
+        self.conv = nn.Sequential(
+            nn.Conv2d(c1, c2, kernel_size=3, stride=2, padding=1, bias=False),
+            nn.BatchNorm2d(c2),
+            nn.ReLU(inplace=True),
+        )
+        self.maxpool = nn.MaxPool2d(kernel_size=3, stride=2, padding=1, dilation=1, ceil_mode=False)
+
+    def forward(self, x):
+        return self.maxpool(self.conv(x))
+
+class DWConvblock(nn.Module):
+    "Depthwise conv + Pointwise conv"
+
+    def __init__(self, in_channels, out_channels, k, s):
+        super(DWConvblock, self).__init__()
+        self.p = k // 2
+        self.conv1 = nn.Conv2d(in_channels, in_channels, kernel_size=k, stride=s, padding=self.p, groups=in_channels,
+                               bias=False)
+        self.bn1 = nn.BatchNorm2d(in_channels)
+        self.conv2 = nn.Conv2d(in_channels, out_channels, kernel_size=1, stride=1, padding=0, bias=False)
+        self.bn2 = nn.BatchNorm2d(out_channels)
+
+    def forward(self, x):
+        x = self.conv1(x)
+        x = self.bn1(x)
+        x = F.relu(x)
+        x = self.conv2(x)
+        x = self.bn2(x)
+        x = F.relu(x)
+        return x
+        
+class ADD(nn.Module):
+    # Stortcut a list of tensors along dimension
+    def __init__(self, alpha=0.5):
+        super(ADD, self).__init__()
+        self.a = alpha
+
+    def forward(self, x):
+        x1, x2 = x[0], x[1]
+        return torch.add(x1, x2, alpha=self.a)
